@@ -1,0 +1,55 @@
+# Compiled executables
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Object files
+*.o
+*.obj
+
+# Debug files
+*.pdb
+*.ilk
+
+# Build directories
+build/
+bin/
+debug/
+release/
+
+# IDE files
+.vs/
+.vscode/settings.json
+.vscode/launch.json
+.vscode/tasks.json
+*.user
+*.suo
+*.sdf
+*.opensdf
+
+# Config files that might contain sensitive data
+# (Remove these lines if you want to include example configs)
+# triggerbot_config.txt
+
+# Temporary files
+*~
+*.tmp
+*.temp
+*.log
+
+# Windows specific
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Archives
+*.zip
+*.rar
+*.7z
+
+# Package files
+*.pkg
+*.deb
+*.rpm
