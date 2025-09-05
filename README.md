@@ -1,20 +1,31 @@
-# Educational Triggerbot for Custom Games
+# Advanced Stealth Triggerbot for Educational Purposes
 
-This is an educational triggerbot implementation designed for learning purposes and use in custom games only.
+This is an educational triggerbot implementation with sophisticated anti-detection techniques designed for learning purposes and use in custom games only.
 
 ## ⚠️ IMPORTANT DISCLAIMER
-This code is for **EDUCATIONAL PURPOSES ONLY**. It is designed to help understand game automation concepts and should only be used in custom games that you own or have explicit permission to modify.
+This code is for **EDUCATIONAL PURPOSES ONLY**. It includes advanced anti-detection techniques to demonstrate modern evasion methods. It should only be used in custom games that you own or have explicit permission to modify.
+
+## New Anti-Detection Features
+
+- **Human-Like Behavior**: Realistic timing patterns using gamma distributions
+- **Pattern Breaking**: Anti-detection delays and behavior variation
+- **Multiple Input Methods**: Rotates between different API calls to avoid monitoring
+- **Stealth Mode**: Advanced mode with sophisticated evasion techniques
+- **Break Simulation**: Automatic human-like breaks during operation
+- **Shot Imperfection**: Occasionally misses shots to simulate human behavior
+- **Aim Drift**: Natural mouse movement with micro-jitter
+- **Burst Fire Patterns**: Realistic firing sequences instead of constant clicking
+
+See `ANTI_DETECTION.md` for detailed information about implemented techniques.
 
 ## Features
 
-- **Color-based enemy detection**: Detects enemies based on RGB color thresholds
-- **Configurable detection area**: Adjustable crosshair detection radius
-- **Customizable firing delay**: Prevents spam clicking
-- **Persistent configuration**: Settings are saved and loaded automatically
-- **Real-time toggle**: F1 to enable/disable, F2 to exit
-- **Color picker utility**: Help identify enemy colors in your game
-- **Low CPU usage**: Optimized scanning loop
-- **Configuration management**: Save, load, and reset settings
+- **Advanced Color Detection**: Enhanced enemy detection with confidence scoring
+- **Stealth Configuration**: Configurable human timing profiles
+- **Real-time Controls**: F1=Toggle, F2=Exit, F3=Stealth Mode, F4=Break
+- **Session Statistics**: Tracks shots fired and usage patterns
+- **Anti-Pattern System**: Breaks detectable patterns automatically
+- **Multiple Detection Methods**: Rotates pixel reading techniques
 
 ## How It Works
 
