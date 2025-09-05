@@ -83,11 +83,11 @@ public:
         return std::uniform_real_distribution<>(0.0, 1.0)(gen) < adjustedChance;
     }
     
-    // Anti-pattern detection
+    // Anti-pattern detection (optimized for faster response)
     static void AntiPatternDelay() {
-        // Occasional completely random delays to break patterns
-        if (std::uniform_real_distribution<>(0.0, 1.0)(gen) < 0.05) {
-            int randomDelay = std::uniform_int_distribution<>(500, 2000)(gen);
+        // Reduced frequency and duration for better responsiveness
+        if (std::uniform_real_distribution<>(0.0, 1.0)(gen) < 0.02) { // Reduced from 0.05 to 0.02
+            int randomDelay = std::uniform_int_distribution<>(100, 500)(gen); // Reduced from 500-2000
             std::this_thread::sleep_for(std::chrono::milliseconds(randomDelay));
         }
     }

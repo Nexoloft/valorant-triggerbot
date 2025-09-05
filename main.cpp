@@ -20,6 +20,18 @@ private:
     int detectionRadius;
     int shotsFired;
     bool stealthMode;
+    bool fastMode; // New fast mode option
+    bool debugMode; // Debug mode for color detection
+    bool testMode; // Test mode - instant shooting
+    int sensitivityLevel; // 1=strict, 2=normal, 3=lenient, 4=very lenient
+    
+    // Aimbot features
+    bool aimbotEnabled;
+    float aimSpeed; // Mouse movement speed multiplier
+    int aimSmoothness; // Smoothness factor (1-10)
+    bool aimPrediction; // Lead target prediction
+    int aimFOV; // Field of view for aimbot activation
+    std::chrono::steady_clock::time_point lastAimMove;
     
     // Anti-detection features
     StealthUtils::TimingProfile humanTiming;
@@ -36,7 +48,7 @@ private:
     ColorThreshold enemyColors;
     
 public:
-    Triggerbot() : isActive(false), delay(50), detectionRadius(5), shotsFired(0), stealthMode(true) {
+    Triggerbot() : isActive(false), delay(50), detectionRadius(12), shotsFired(0), stealthMode(true), fastMode(false), debugMode(false), testMode(false), sensitivityLevel(3), aimbotEnabled(false), aimSpeed(1.0f), aimSmoothness(5), aimPrediction(false), aimFOV(50) {
         // Get screen dimensions
         screenWidth = GetSystemMetrics(SM_CXSCREEN);
         screenHeight = GetSystemMetrics(SM_CYSCREEN);
@@ -45,14 +57,15 @@ public:
         crosshairX = screenWidth / 2;
         crosshairY = screenHeight / 2;
         
-        // Set enemy color thresholds (Valorant purple enemy colors)
-        // These values are based on Valorant's default purple enemy highlighting
-        enemyColors = {220, 255, 70, 110, 235, 255}; // Purple enemies (RGB: 240, 90, 255 ± tolerance)
+        // Set enemy color thresholds (Valorant purple enemy colors) - EXPANDED RANGES
+        // More lenient detection for faster response
+        enemyColors = {170, 255, 30, 160, 190, 255}; // Purple: R:170-255, G:30-160, B:190-255 (broader)
         
-        // Initialize stealth timing profile
-        humanTiming = StealthUtils::TimingProfile(80, 25, 1.3, 0.08);
+        // Initialize stealth timing profile - Optimized for faster response
+        humanTiming = StealthUtils::TimingProfile(25, 15, 1.1, 0.02); // Much faster: 25ms base, less variance
         sessionStart = std::chrono::steady_clock::now();
         lastShot = sessionStart;
+        lastAimMove = sessionStart;
         
         // Try to load existing configuration
         loadConfig();
@@ -120,36 +133,365 @@ public:
         int r, g, b;
         extractRGB(color, r, g, b);
         
-        return (r >= enemyColors.redMin && r <= enemyColors.redMax &&
-                g >= enemyColors.greenMin && g <= enemyColors.greenMax &&
-                b >= enemyColors.blueMin && b <= enemyColors.blueMax);
+        // Range-based detection (expanded ranges)
+        bool rangeMatch = (r >= enemyColors.redMin && r <= enemyColors.redMax &&
+                          g >= enemyColors.greenMin && g <= enemyColors.greenMax &&
+                          b >= enemyColors.blueMin && b <= enemyColors.blueMax);
+        
+        // Adaptive tolerance based on sensitivity level
+        int tolerance;
+        switch (sensitivityLevel) {
+            case 1: tolerance = 40; break;  // Strict
+            case 2: tolerance = 60; break;  // Normal  
+            case 3: tolerance = 80; break;  // Lenient (default)
+            case 4: tolerance = 100; break; // Very lenient
+            default: tolerance = 80; break;
+        }
+        
+        // Multiple tolerance-based detections for different purple variations
+        // Primary purple target
+        bool purpleMatch1 = (abs(r - 240) <= tolerance &&
+                            abs(g - 90) <= tolerance &&
+                            abs(b - 255) <= tolerance);
+        
+        // Dark purple variant
+        bool purpleMatch2 = (abs(r - 200) <= tolerance &&
+                            abs(g - 60) <= tolerance &&
+                            abs(b - 220) <= tolerance);
+        
+        // Bright purple variant
+        bool purpleMatch3 = (abs(r - 255) <= tolerance &&
+                            abs(g - 120) <= tolerance &&
+                            abs(b - 255) <= tolerance);
+        
+        // Pink-purple variant (sometimes appears)
+        bool purpleMatch4 = (abs(r - 220) <= tolerance &&
+                            abs(g - 80) <= tolerance &&
+                            abs(b - 240) <= tolerance);
+        
+        // For very lenient mode, add more color variations
+        bool extraMatch = false;
+        if (sensitivityLevel >= 3) {
+            extraMatch = (abs(r - 180) <= tolerance &&
+                         abs(g - 70) <= tolerance &&
+                         abs(b - 200) <= tolerance);
+        }
+        
+        return rangeMatch || purpleMatch1 || purpleMatch2 || purpleMatch3 || purpleMatch4 || extraMatch;
     }
     
     // Check if enemy is in crosshair area
     bool isEnemyInCrosshair() {
-        // Check multiple pixels around crosshair for better detection
-        for (int x = crosshairX - detectionRadius; x <= crosshairX + detectionRadius; x++) {
-            for (int y = crosshairY - detectionRadius; y <= crosshairY + detectionRadius; y++) {
+        static int colorCheckCount = 0;
+        colorCheckCount++;
+        
+        // Check center pixel first for fastest response
+        COLORREF centerColor = getPixelColor(crosshairX, crosshairY);
+        if (isEnemyColor(centerColor)) {
+            if (debugMode) {
+                int r, g, b;
+                extractRGB(centerColor, r, g, b);
+                std::cout << "ENEMY DETECTED at CENTER! RGB: (" << r << "," << g << "," << b << ")" << std::endl;
+            }
+            return true;
+        }
+        
+        // Check immediate surrounding pixels (3x3 area)
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dy = -1; dy <= 1; dy++) {
+                if (dx == 0 && dy == 0) continue; // Already checked center
+                int x = crosshairX + dx;
+                int y = crosshairY + dy;
+                
                 COLORREF pixelColor = getPixelColor(x, y);
                 if (isEnemyColor(pixelColor)) {
+                    if (debugMode) {
+                        int r, g, b;
+                        extractRGB(pixelColor, r, g, b);
+                        std::cout << "ENEMY DETECTED in 3x3! RGB: (" << r << "," << g << "," << b << ") at (" << x << "," << y << ")" << std::endl;
+                    }
                     return true;
                 }
             }
         }
+        
+        // Check full detection area (spiral pattern from center outward)
+        for (int radius = 2; radius <= detectionRadius; radius++) {
+            for (int x = crosshairX - radius; x <= crosshairX + radius; x++) {
+                for (int y = crosshairY - radius; y <= crosshairY + radius; y++) {
+                    // Skip if not on the current radius boundary
+                    if (abs(x - crosshairX) != radius && abs(y - crosshairY) != radius) continue;
+                    
+                    COLORREF pixelColor = getPixelColor(x, y);
+                    
+                    if (debugMode && colorCheckCount % 1000 == 0) {
+                        int r, g, b;
+                        extractRGB(pixelColor, r, g, b);
+                        std::cout << "Checking radius " << radius << " pixel (" << x << "," << y << ") RGB: (" << r << "," << g << "," << b << ")" << std::endl;
+                    }
+                    
+                    if (isEnemyColor(pixelColor)) {
+                        if (debugMode) {
+                            int r, g, b;
+                            extractRGB(pixelColor, r, g, b);
+                            std::cout << "ENEMY DETECTED at radius " << radius << "! RGB: (" << r << "," << g << "," << b << ") at (" << x << "," << y << ")" << std::endl;
+                        }
+                        return true;
+                    }
+                }
+            }
+        }
+        
         return false;
+    }
+    
+    // Find closest enemy pixel to crosshair
+    bool findClosestEnemy(int& targetX, int& targetY) {
+        int closestDistance = INT_MAX;
+        bool foundEnemy = false;
+        int pixelsChecked = 0;
+        int enemyPixelsFound = 0;
+        
+        // Search in detection area around crosshair (same as triggerbot detection)
+        int searchRadius = detectionRadius + 5; // Slightly larger than detection radius
+        
+        if (debugMode) {
+            std::cout << "Aimbot: Searching in radius " << searchRadius << " around (" << crosshairX << "," << crosshairY << ")" << std::endl;
+        }
+        
+        for (int x = crosshairX - searchRadius; x <= crosshairX + searchRadius; x++) {
+            for (int y = crosshairY - searchRadius; y <= crosshairY + searchRadius; y++) {
+                // Check if within screen bounds
+                if (x < 0 || x >= screenWidth || y < 0 || y >= screenHeight) continue;
+                
+                pixelsChecked++;
+                COLORREF pixelColor = getPixelColor(x, y);
+                if (isEnemyColor(pixelColor)) {
+                    enemyPixelsFound++;
+                    int distance = sqrt((x - crosshairX) * (x - crosshairX) + (y - crosshairY) * (y - crosshairY));
+                    if (distance < closestDistance) {
+                        closestDistance = distance;
+                        targetX = x;
+                        targetY = y;
+                        foundEnemy = true;
+                        
+                        if (debugMode) {
+                            int r, g, b;
+                            extractRGB(pixelColor, r, g, b);
+                            std::cout << "Aimbot: Found enemy color at (" << x << "," << y << ") RGB(" << r << "," << g << "," << b << ") distance: " << distance << std::endl;
+                        }
+                    }
+                }
+            }
+        }
+        
+        if (debugMode) {
+            std::cout << "Aimbot: Checked " << pixelsChecked << " pixels, found " << enemyPixelsFound << " enemy pixels";
+            if (foundEnemy) {
+                std::cout << ", closest at (" << targetX << "," << targetY << ") distance: " << closestDistance;
+            }
+            std::cout << std::endl;
+        }
+        
+        return foundEnemy;
+    }
+    
+    // Smooth mouse movement with human-like characteristics for FPS games
+    void smoothMoveMouse(int targetX, int targetY) {
+        auto now = std::chrono::steady_clock::now();
+        auto timeSinceLastMove = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastAimMove).count();
+        
+        // Reduce timing restriction for more responsive aimbot
+        if (timeSinceLastMove < 5) {
+            if (debugMode) std::cout << "Aimbot: Movement blocked by timing (last move " << timeSinceLastMove << "ms ago)" << std::endl;
+            return;
+        }
+        
+        // In FPS games, crosshair is always at center of screen
+        // We need to calculate relative movement to aim at the target
+        int centerX = crosshairX; // This should be screen center
+        int centerY = crosshairY;
+        
+        // Calculate how far the target is from the crosshair center
+        float deltaX = targetX - centerX;
+        float deltaY = targetY - centerY;
+        float distance = sqrt(deltaX * deltaX + deltaY * deltaY);
+        
+        if (debugMode) {
+            std::cout << "Aimbot: Target (" << targetX << "," << targetY << ") is " 
+                     << deltaX << "," << deltaY << " pixels from crosshair center (" 
+                     << centerX << "," << centerY << ")" << std::endl;
+            std::cout << "Aimbot: Distance from center: " << distance << " pixels" << std::endl;
+        }
+        
+        // Don't move if target is very close to crosshair center
+        if (distance < 3.0f) {
+            if (debugMode) std::cout << "Aimbot: Target already at crosshair center" << std::endl;
+            return;
+        }
+        
+        // Calculate relative mouse movement needed
+        // In FPS games, mouse movement translates to camera rotation
+        float moveX, moveY;
+        
+        if (fastMode || distance < 20.0f) {
+            // Fast mode or close target: move directly
+            moveX = deltaX;
+            moveY = deltaY;
+            if (debugMode) std::cout << "Aimbot: Using direct movement to target" << std::endl;
+        } else {
+            // Smooth movement: move percentage of the way
+            float moveRatio = 0.6f / std::max(1.0f, static_cast<float>(aimSmoothness) / 10.0f);
+            moveX = deltaX * moveRatio * aimSpeed;
+            moveY = deltaY * moveRatio * aimSpeed;
+            if (debugMode) std::cout << "Aimbot: Using smooth movement (" << (moveRatio * 100) << "% of distance)" << std::endl;
+        }
+        
+        // Add slight randomization in stealth mode
+        if (stealthMode && distance > 5.0f) {
+            moveX += (rand() % 3 - 1) * 0.5f;
+            moveY += (rand() % 3 - 1) * 0.5f;
+        }
+        
+        if (debugMode) {
+            std::cout << "Aimbot: Calculated relative movement: (" << moveX << "," << moveY << ")" << std::endl;
+        }
+        
+        // Try multiple methods for mouse movement
+        if (debugMode) std::cout << "Aimbot: Attempting mouse movement..." << std::endl;
+        
+        // Method 1: Try SendInput with relative movement
+        INPUT input = {};
+        input.type = INPUT_MOUSE;
+        input.mi.dx = static_cast<LONG>(moveX);
+        input.mi.dy = static_cast<LONG>(moveY);
+        input.mi.dwFlags = MOUSEEVENTF_MOVE;
+        input.mi.mouseData = 0;
+        input.mi.dwExtraInfo = 0;
+        input.mi.time = 0;
+        
+        UINT result = SendInput(1, &input, sizeof(INPUT));
+        
+        if (debugMode) {
+            std::cout << "Aimbot: SendInput relative movement (" << moveX << "," << moveY << ") Result: " << result << std::endl;
+        }
+        
+        // Method 2: Also try mouse_event as backup
+        mouse_event(MOUSEEVENTF_MOVE, static_cast<DWORD>(moveX), static_cast<DWORD>(moveY), 0, 0);
+        
+        if (debugMode) {
+            std::cout << "Aimbot: mouse_event relative movement (" << moveX << "," << moveY << ") sent" << std::endl;
+        }
+        
+        // Method 3: Try scaled movement if game uses different sensitivity
+        if (abs(moveX) > 1 || abs(moveY) > 1) {
+            // Try with scaled movement for high DPI or different game sensitivity
+            float scale = 2.0f; // Try 2x scaling
+            INPUT scaledInput = {};
+            scaledInput.type = INPUT_MOUSE;
+            scaledInput.mi.dx = static_cast<LONG>(moveX * scale);
+            scaledInput.mi.dy = static_cast<LONG>(moveY * scale);
+            scaledInput.mi.dwFlags = MOUSEEVENTF_MOVE;
+            scaledInput.mi.mouseData = 0;
+            scaledInput.mi.dwExtraInfo = 0;
+            scaledInput.mi.time = 0;
+            
+            UINT scaledResult = SendInput(1, &scaledInput, sizeof(INPUT));
+            
+            if (debugMode) {
+                std::cout << "Aimbot: SendInput scaled movement (" << (moveX * scale) << "," << (moveY * scale) << ") Result: " << scaledResult << std::endl;
+            }
+        }
+        
+        lastAimMove = now;
+    }
+    
+    // Aimbot main function
+    void aimbot() {
+        if (!aimbotEnabled) {
+            if (debugMode) {
+                static int disabledCount = 0;
+                disabledCount++;
+                if (disabledCount % 1000 == 0) {
+                    std::cout << "Aimbot called but disabled" << std::endl;
+                }
+            }
+            return;
+        }
+        
+        if (debugMode) {
+            std::cout << "Aimbot: Searching for enemies..." << std::endl;
+        }
+        
+        int targetX, targetY;
+        if (findClosestEnemy(targetX, targetY)) {
+            if (debugMode) {
+                std::cout << "Aimbot: Enemy found at (" << targetX << "," << targetY << "), moving mouse..." << std::endl;
+            }
+            smoothMoveMouse(targetX, targetY);
+        } else {
+            if (debugMode) {
+                static int noTargetCount = 0;
+                noTargetCount++;
+                if (noTargetCount % 1000 == 0) {
+                    std::cout << "Aimbot: No enemies found in search area" << std::endl;
+                }
+            }
+        }
+        
+        // Test mode: Force mouse movement to test if it's working at all
+        if (testMode) {
+            static int testCounter = 0;
+            testCounter++;
+            if (testCounter % 100 == 0) { // Every 100 frames
+                if (debugMode) std::cout << "TEST MODE: Forcing mouse movement..." << std::endl;
+                
+                // Try small test movements
+                INPUT testInput = {};
+                testInput.type = INPUT_MOUSE;
+                testInput.mi.dx = 10; // Move 10 pixels right
+                testInput.mi.dy = 0;
+                testInput.mi.dwFlags = MOUSEEVENTF_MOVE;
+                
+                UINT testResult = SendInput(1, &testInput, sizeof(INPUT));
+                if (debugMode) std::cout << "TEST MODE: SendInput test movement result: " << testResult << std::endl;
+                
+                // Also try mouse_event
+                mouse_event(MOUSEEVENTF_MOVE, 10, 0, 0, 0);
+                if (debugMode) std::cout << "TEST MODE: mouse_event test movement sent" << std::endl;
+            }
+        }
     }
     
     // Advanced stealth shooting with human-like patterns
     void shoot() {
-        if (stealthMode) {
-            // Check if we should skip this shot (human imperfection)
-            if (StealthUtils::ShouldSkipShot(0.03)) {
+        if (debugMode) {
+            std::cout << "SHOOT() called - stealthMode:" << stealthMode << " fastMode:" << fastMode << " testMode:" << testMode << std::endl;
+        }
+        
+        if (testMode) {
+            // Test mode - instant shooting with no delays
+            if (debugMode) std::cout << "TEST MODE: Instant shot!" << std::endl;
+            
+            mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
+            mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+            
+            shotsFired++;
+            std::cout << "TEST SHOT FIRED! (Total: " << shotsFired << ")" << std::endl;
+            return;
+        }
+        
+        if (stealthMode && !fastMode) {
+            // Full stealth mode with all delays
+            // Check if we should skip this shot (reduced imperfection for faster response)
+            if (StealthUtils::ShouldSkipShot(0.01)) { // Reduced from 0.03 to 0.01
+                if (debugMode) std::cout << "Shot skipped due to human imperfection" << std::endl;
                 return;
             }
             
-            // Check for burst fire pattern
+            // Check for burst fire pattern (more aggressive)
             static int burstCount = 0;
-            bool shouldBurst = StealthUtils::ShouldBurstFire(0.12, &burstCount);
+            bool shouldBurst = StealthUtils::ShouldBurstFire(0.18, &burstCount); // Increased from 0.12
             
             if (!shouldBurst) {
                 // Use human-like delay
@@ -157,44 +499,67 @@ public:
                 auto now = std::chrono::steady_clock::now();
                 auto timeSinceLastShot = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastShot).count();
                 
+                if (debugMode) {
+                    std::cout << "Human delay: " << humanDelay << "ms, Time since last: " << timeSinceLastShot << "ms" << std::endl;
+                }
+                
                 if (timeSinceLastShot < humanDelay) {
+                    if (debugMode) std::cout << "Shot blocked by human delay timing" << std::endl;
                     return; // Too soon, human wouldn't react this fast
                 }
                 
                 lastShot = now;
+            } else {
+                if (debugMode) std::cout << "Burst fire mode active" << std::endl;
             }
             
-            // Simulate realistic input timing
+            if (debugMode) std::cout << "Executing stealth shot..." << std::endl;
+            
+            // Simulate realistic input timing (reduced for faster response)
             std::this_thread::sleep_for(std::chrono::microseconds(
-                std::uniform_int_distribution<>(100, 800)(StealthUtils::gen)
+                std::uniform_int_distribution<>(50, 200)(StealthUtils::gen) // Reduced from 100-800
             ));
             
-            // Use SendInput instead of mouse_event for better stealth
-            INPUT input = {};
-            input.type = INPUT_MOUSE;
+            // Use mouse_event for maximum compatibility
+            mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
+            if (debugMode) std::cout << "Mouse down sent" << std::endl;
             
-            // Mouse down
-            input.mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
-            SendInput(1, &input, sizeof(INPUT));
-            
-            // Variable hold time (human-like)
-            int holdTime = std::uniform_int_distribution<>(8, 25)(StealthUtils::gen);
+            // Variable hold time (optimized for faster response)
+            int holdTime = std::uniform_int_distribution<>(5, 15)(StealthUtils::gen); // Reduced from 8-25
             std::this_thread::sleep_for(std::chrono::milliseconds(holdTime));
             
             // Mouse up
-            input.mi.dwFlags = MOUSEEVENTF_LEFTUP;
-            SendInput(1, &input, sizeof(INPUT));
+            mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+            if (debugMode) std::cout << "Mouse up sent - SHOT COMPLETE!" << std::endl;
             
             shotsFired++;
             
             // Occasional anti-pattern delay
             StealthUtils::AntiPatternDelay();
             
+        } else if (stealthMode && fastMode) {
+            if (debugMode) std::cout << "Executing fast mode shot..." << std::endl;
+            
+            // Fast stealth mode - minimal delays but use mouse_event for compatibility
+            std::this_thread::sleep_for(std::chrono::microseconds(25));
+            
+            mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
+            std::this_thread::sleep_for(std::chrono::milliseconds(3));
+            mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+            
+            if (debugMode) std::cout << "Fast shot complete!" << std::endl;
+            
+            shotsFired++;
+            
         } else {
+            if (debugMode) std::cout << "Executing standard shot..." << std::endl;
+            
             // Standard shooting for non-stealth mode
             mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+            
+            if (debugMode) std::cout << "Standard shot complete!" << std::endl;
         }
     }
     
@@ -202,7 +567,7 @@ public:
     void run() {
         std::cout << "Advanced Stealth Triggerbot started.\n";
         std::cout << "Stealth Mode: " << (stealthMode ? "ENABLED" : "DISABLED") << "\n";
-        std::cout << "Controls: F1=Toggle, F2=Exit, F3=Toggle Stealth, F4=Break Simulation\n";
+        std::cout << "Controls: F1=Toggle, F2=Exit, F3=Toggle Stealth, F4=Break Simulation, F5=Fast Mode, F6=Debug, F7=Color Sample, F8=Test Mode, F9=Sensitivity, F10=Aimbot\n";
         std::cout << "Detection area: " << crosshairX << "x" << crosshairY << " (radius: " << detectionRadius << ")\n";
         
         bool breakMode = false;
@@ -241,6 +606,73 @@ public:
                 std::this_thread::sleep_for(std::chrono::milliseconds(200));
             }
             
+            if (GetAsyncKeyState(VK_F5) & 0x8000) {
+                fastMode = !fastMode;
+                std::cout << "Fast Mode " << (fastMode ? "ENABLED" : "DISABLED") << std::endl;
+                if (fastMode) {
+                    std::cout << "Warning: Fast mode reduces stealth effectiveness for maximum speed!" << std::endl;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            }
+            
+            if (GetAsyncKeyState(VK_F6) & 0x8000) {
+                debugMode = !debugMode;
+                std::cout << "Debug Mode " << (debugMode ? "ENABLED" : "DISABLED") << std::endl;
+                if (debugMode) {
+                    std::cout << "Debug mode will show color detection information..." << std::endl;
+                    std::cout << "Looking for RGB ranges: R:" << enemyColors.redMin << "-" << enemyColors.redMax 
+                             << " G:" << enemyColors.greenMin << "-" << enemyColors.greenMax 
+                             << " B:" << enemyColors.blueMin << "-" << enemyColors.blueMax << std::endl;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            }
+            
+            if (GetAsyncKeyState(VK_F7) & 0x8000) {
+                // Color sampling mode - show what color is at crosshair
+                COLORREF centerColor = getPixelColor(crosshairX, crosshairY);
+                int r, g, b;
+                extractRGB(centerColor, r, g, b);
+                std::cout << "CENTER PIXEL RGB: (" << r << "," << g << "," << b << ")";
+                if (isEnemyColor(centerColor)) {
+                    std::cout << " - ENEMY COLOR DETECTED!";
+                }
+                std::cout << std::endl;
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            }
+            
+            if (GetAsyncKeyState(VK_F8) & 0x8000) {
+                testMode = !testMode;
+                std::cout << "Test Mode " << (testMode ? "ENABLED" : "DISABLED") << std::endl;
+                if (testMode) {
+                    std::cout << "WARNING: Test mode uses instant shooting with no delays!" << std::endl;
+                    std::cout << "This will bypass ALL stealth features for debugging." << std::endl;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            }
+            
+            if (GetAsyncKeyState(VK_F9) & 0x8000) {
+                sensitivityLevel = (sensitivityLevel % 4) + 1; // Cycle 1->2->3->4->1
+                std::string sensitivity;
+                switch (sensitivityLevel) {
+                    case 1: sensitivity = "STRICT"; break;
+                    case 2: sensitivity = "NORMAL"; break;
+                    case 3: sensitivity = "LENIENT"; break;
+                    case 4: sensitivity = "VERY LENIENT"; break;
+                }
+                std::cout << "Detection Sensitivity: " << sensitivity << " (Level " << sensitivityLevel << ")" << std::endl;
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            }
+            
+            if (GetAsyncKeyState(VK_F10) & 0x8000) {
+                aimbotEnabled = !aimbotEnabled;
+                std::cout << "Aimbot " << (aimbotEnabled ? "ENABLED" : "DISABLED") << std::endl;
+                if (aimbotEnabled) {
+                    std::cout << "Aimbot settings: Speed=" << aimSpeed << " Smoothness=" << aimSmoothness 
+                             << " FOV=" << aimFOV << " Prediction=" << (aimPrediction ? "ON" : "OFF") << std::endl;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            }
+            
             // Automatic break simulation
             auto now = std::chrono::steady_clock::now();
             if (stealthMode && std::chrono::duration_cast<std::chrono::seconds>(now - lastBreakCheck).count() > 30) {
@@ -256,22 +688,44 @@ public:
             
             // Main triggerbot logic
             if (isActive && !breakMode) {
+                // Run aimbot first
+                if (aimbotEnabled) {
+                    aimbot();
+                    // Delay after aimbot movement to let mouse position settle
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                }
+                
                 if (isEnemyInCrosshair()) {
+                    if (debugMode) std::cout << "Enemy in crosshair - calling shoot()!" << std::endl;
                     shoot();
                     if (!stealthMode) {
                         std::cout << "Shot fired!" << std::endl;
                         std::this_thread::sleep_for(std::chrono::milliseconds(delay));
                     }
+                } else if (debugMode) {
+                    static int noEnemyCount = 0;
+                    noEnemyCount++;
+                    if (noEnemyCount % 2000 == 0) {
+                        std::cout << "No enemy detected in crosshair area" << std::endl;
+                    }
+                }
+            } else if (debugMode) {
+                static int inactiveCount = 0;
+                inactiveCount++;
+                if (inactiveCount % 2000 == 0) {
+                    std::cout << "Triggerbot inactive - isActive:" << isActive << " breakMode:" << breakMode << std::endl;
                 }
             }
             
-            // Adaptive sleep timing
-            if (stealthMode) {
-                // Variable loop timing to avoid detection
-                int sleepTime = std::uniform_int_distribution<>(1, 3)(StealthUtils::gen);
-                std::this_thread::sleep_for(std::chrono::milliseconds(sleepTime));
+            // Adaptive sleep timing (optimized for responsiveness)
+            if (fastMode) {
+                // Ultra-fast mode - minimal sleep
+                std::this_thread::sleep_for(std::chrono::microseconds(100));
+            } else if (stealthMode) {
+                // Reduced loop timing for faster detection
+                std::this_thread::sleep_for(std::chrono::microseconds(500)); // Much faster than 1-3ms
             } else {
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                std::this_thread::sleep_for(std::chrono::microseconds(200)); // Even faster for non-stealth
             }
         }
     }
@@ -281,6 +735,14 @@ public:
     void setDetectionRadius(int radius) { detectionRadius = radius; }
     void setCrosshairPosition(int x, int y) { crosshairX = x; crosshairY = y; }
     void setStealthMode(bool enabled) { stealthMode = enabled; }
+    void setFastMode(bool enabled) { fastMode = enabled; }
+    void setDebugMode(bool enabled) { debugMode = enabled; }
+    void setTestMode(bool enabled) { testMode = enabled; }
+    void setAimbotEnabled(bool enabled) { aimbotEnabled = enabled; }
+    void setAimSpeed(float speed) { aimSpeed = speed; }
+    void setAimSmoothness(int smoothness) { aimSmoothness = smoothness; }
+    void setAimFOV(int fov) { aimFOV = fov; }
+    void setAimPrediction(bool enabled) { aimPrediction = enabled; }
     void setHumanTiming(int base, int variance, double spread, double fatigue) {
         humanTiming = StealthUtils::TimingProfile(base, variance, spread, fatigue);
     }
@@ -368,6 +830,25 @@ public:
         std::cout << "\n=== Advanced Stealth Triggerbot Settings ===" << std::endl;
         std::cout << "Status: " << (isActive ? "ACTIVE" : "INACTIVE") << std::endl;
         std::cout << "Stealth Mode: " << (stealthMode ? "ENABLED" : "DISABLED") << std::endl;
+        std::cout << "Fast Mode: " << (fastMode ? "ENABLED" : "DISABLED") << std::endl;
+        std::cout << "Debug Mode: " << (debugMode ? "ENABLED" : "DISABLED") << std::endl;
+        std::cout << "Test Mode: " << (testMode ? "ENABLED" : "DISABLED") << std::endl;
+        
+        std::string sensitivity;
+        switch (sensitivityLevel) {
+            case 1: sensitivity = "STRICT"; break;
+            case 2: sensitivity = "NORMAL"; break;
+            case 3: sensitivity = "LENIENT"; break;
+            case 4: sensitivity = "VERY LENIENT"; break;
+        }
+        std::cout << "Detection Sensitivity: " << sensitivity << " (Level " << sensitivityLevel << ")" << std::endl;
+        std::cout << "Aimbot: " << (aimbotEnabled ? "ENABLED" : "DISABLED") << std::endl;
+        if (aimbotEnabled) {
+            std::cout << "  Speed: " << aimSpeed << "x" << std::endl;
+            std::cout << "  Smoothness: " << aimSmoothness << "/10" << std::endl;
+            std::cout << "  FOV: " << aimFOV << " pixels" << std::endl;
+            std::cout << "  Prediction: " << (aimPrediction ? "ON" : "OFF") << std::endl;
+        }
         std::cout << "Base Delay: " << delay << "ms (when stealth disabled)" << std::endl;
         std::cout << "Detection radius: " << detectionRadius << " pixels" << std::endl;
         std::cout << "Crosshair position: (" << crosshairX << ", " << crosshairY << ")" << std::endl;
@@ -426,7 +907,8 @@ int main() {
     std::cout << "2. Color Picker (to find enemy colors)" << std::endl;
     std::cout << "3. Reset Configuration to Defaults" << std::endl;
     std::cout << "4. Advanced Stealth Configuration" << std::endl;
-    std::cout << "5. Exit" << std::endl;
+    std::cout << "5. Aimbot Configuration" << std::endl;
+    std::cout << "6. Exit" << std::endl;
     
     int choice;
     std::cin >> choice;
@@ -539,7 +1021,47 @@ int main() {
             bot.showSettings();
             break;
         }
-        case 5:
+        case 5: {
+            // Aimbot configuration
+            Triggerbot bot;
+            
+            std::cout << "\n=== Aimbot Configuration ===" << std::endl;
+            bot.showSettings();
+            
+            char enableAimbot;
+            std::cout << "\nEnable aimbot? (y/n): ";
+            std::cin >> enableAimbot;
+            bot.setAimbotEnabled(enableAimbot == 'y' || enableAimbot == 'Y');
+            
+            if (enableAimbot == 'y' || enableAimbot == 'Y') {
+                float speed;
+                int smoothness, fov;
+                char prediction;
+                
+                std::cout << "Aim speed multiplier [0.5-3.0]: ";
+                std::cin >> speed;
+                bot.setAimSpeed(speed);
+                
+                std::cout << "Aim smoothness [1-10] (higher = smoother): ";
+                std::cin >> smoothness;
+                bot.setAimSmoothness(smoothness);
+                
+                std::cout << "Aimbot FOV radius [20-200] (pixels): ";
+                std::cin >> fov;
+                bot.setAimFOV(fov);
+                
+                std::cout << "Enable target prediction? (y/n): ";
+                std::cin >> prediction;
+                bot.setAimPrediction(prediction == 'y' || prediction == 'Y');
+            }
+            
+            bot.saveConfig();
+            
+            std::cout << "\nAimbot configuration saved!" << std::endl;
+            bot.showSettings();
+            break;
+        }
+        case 6:
             std::cout << "Goodbye!" << std::endl;
             break;
         default:
